@@ -23,6 +23,8 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         ggml-cpu/amx/mmq.cpp
         ggml-cpu/amx/mmq.h
         ggml-cpu/ggml-cpu-impl.h
+        ggml-cpu/hnsw-wrapper/hnsw_wrapper.cpp
+        ggml-cpu/hnsw-wrapper/hnsw_wrapper.h
         )
 
     target_compile_features(${GGML_CPU_NAME} PRIVATE c_std_11 cxx_std_17)
