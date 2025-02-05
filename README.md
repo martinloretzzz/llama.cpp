@@ -1,5 +1,35 @@
-Build and Install hnswlib from: 
-https://github.com/martinloretzzz/hnswlib
+# speed up CPU based LLM inference using a HNSW index on the output embeddings
+
+To get the next token from an LLM, we compute the probabilities for each individual token in the LLM's vocabulary by multiplying the last hidden state with the output embedding matrix. This matrix is massive, accounting for up to 20% of the total parameters in small multilingual LLMs. 
+
+When sampling the next token with top-k sampling, we're only sampling from the 40 most probable tokens out of 128,256 (for Llama 3.2 models). By using an HNSW vector index, we can retrieve these 40 most probable tokens directly through an approximate nearest neighbor search over the output embeddings, avoiding the full matrix multiplication with the output embeddings. 
+
+This reduces memory accesses and computation, resulting in up to 28% faster CPU-based inference for Llama 2.1 1B on mid-range laptops.
+
+### For more details, read the full blog post on [martinloretz.com/blog/vector-index-cpu/](https://martinloretz.com/blog/vector-index-cpu/)
+
+## Benchmarks
+
+`llama-bench` for Llama 1B F16 (Ubuntu = Intel® Core™ i7-10750H x 12, 2 x 16GiB DDR4 2933 MHz, MacBook = MacBook Pro 16" M4 Pro, vec = vector index, MM = matrix multiplication (reference)):
+
+| model       | threads |  test |      Vec t/s |       MM t/s |  Speedup |
+| :---------- | ------: | ----: | -----------: | -----------: | -------: |
+| Ubuntu CPU  |       1 | tg256 |  5.99 ± 0.05 |  4.73 ± 0.04 | **1.27** |
+| Ubuntu CPU  |       4 | tg256 | 11.20 ± 0.35 |  8.78 ± 0.06 | **1.28** |
+| Ubuntu CPU  |       6 | tg256 | 12.51 ± 0.30 |  9.72 ± 0.13 | **1.29** |
+| MacBook CPU |       1 | tg256 | 23.56 ± 0.24 | 20.11 ± 0.44 | **1.17** |
+| MacBook CPU |       2 | tg256 | 42.84 ± 0.49 | 38.08 ± 0.74 | **1.12** |
+| MacBook CPU |       4 | tg256 | 61.48 ± 1.07 | 58.19 ± 1.00 | **1.06** |
+| MacBook CPU |       6 | tg256 | 48.95 ± 0.78 | 47.96 ± 0.26 | **1.02** |
+| MacBook CPU |      10 | tg256 | 12.52 ± 0.31 | 11.80 ± 0.18 | **1.06** |
+
+LLama 3.2 1B was selected for these benchmarks because of its relatively large embedding matrix (21% of all parameters). Full model speedups for larger models are lower because less time is spent computing the output embeddings.
+
+### Replicate these benchmarks:
+
+This llama.cpp fork only works with [Llama-3.2-1B-Instruct.fp16.gguf](https://huggingface.co/unsloth/Llama-3.2-1B-Instruct-GGUF), you can get the prebuilt HNSW index for the model from [here](https://drive.google.com/file/d/1lU-lC9ioe7rKcyVMk2TVmt7O-DmO5AWU/view?usp=sharing).
+
+Build and install this faster version of hnswlib: [martinloretzzz/hnswlib](https://github.com/martinloretzzz/hnswlib)
 
 CPU build:
 `cmake -B build -DLLAMA_OPENBLAS=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF`
