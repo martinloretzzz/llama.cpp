@@ -13,6 +13,8 @@
 #include "amx/amx.h"
 #include "ggml.h"
 
+#include "hnsw-wrapper/hnsw_wrapper.h"
+
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h> // using malloc.h with MSC/MINGW
 #elif !defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__OpenBSD__)
@@ -7610,6 +7612,103 @@ UseGgmlGemm2:;
     }
 }
 
+
+
+static void ggml_compute_forward_mul_mat_topk(
+        const struct ggml_compute_params * params,
+              struct ggml_tensor * dst) {
+
+    const struct ggml_tensor * src0 = dst->src[0];
+    const struct ggml_tensor * src1 = dst->src[1];
+
+    GGML_TENSOR_BINARY_OP_LOCALS
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    enum ggml_type           const vec_dot_type         = type_traits_cpu[src0->type].vec_dot_type;
+    ggml_from_float_t        const from_float           = type_traits_cpu[vec_dot_type].from_float;
+    int64_t                  const vec_dot_num_rows     = type_traits_cpu[src0->type].nrows;
+
+    GGML_ASSERT(ne0 == ne01);
+    GGML_ASSERT(ne1 == ne11);
+    GGML_ASSERT(ne2 == ne12);
+    GGML_ASSERT(ne3 == ne13);
+
+    // we don't support permuted src0 or src1
+    GGML_ASSERT(nb00 == ggml_type_size(src0->type));
+    GGML_ASSERT(nb10 == ggml_type_size(src1->type));
+
+    // dst cannot be transposed or permuted
+    GGML_ASSERT(nb0 == sizeof(float));
+    GGML_ASSERT(nb0 <= nb1);
+    GGML_ASSERT(nb1 <= nb2);
+    GGML_ASSERT(nb2 <= nb3);
+
+    /*
+    printf("\n");
+    printf("dest %ld %ld %ld %ld ne %ld %ld %ld %ld nb\n", ne0, ne1, ne2, ne3, nb0, nb1, nb2, nb3);
+    printf("src0 %ld %ld %ld %ld ne %ld %ld %ld %ld nb\n", ne00, ne01, ne02, ne03, nb00, nb01, nb02, nb03);
+    printf("src1 %ld %ld %ld %ld ne %ld %ld %ld %ld nb\n", ne10, ne11, ne12, ne13, nb10, nb11, nb12, nb13);
+    */
+
+    // if the environment valiable MM is set (to any value), we do the original matrix multiplication
+    // instead of the vector index, this is usefull for benchmarking without recompiling
+    const char* env_var_value = getenv("MM");
+    if (env_var_value != NULL || ne11 != 1 || ne12 != 1 || ne13 != 1) {
+        ggml_compute_forward_mul_mat(params, dst);
+        return;
+    }
+
+    // Check if dest is unbatched is a 1d array
+    GGML_ASSERT(ne1 == 1 && ne2 == 1 && ne3 == 1);
+
+    int k = 50;
+    int ef_search = 200;
+    int dimensions = ne10;
+
+    if (ith == 0) {
+        float * dest = dst->data;
+        for (int i = 0; i < 128000; ++i) {
+            dest[i] = -INFINITY;
+        }
+
+        search_load_index(src1->data, dst->data, k, dimensions, ef_search);
+    }
+
+    // There is a probability that not all tokens are included in the hnsw index,
+    // expecially the special tokens (too different from all others?),
+    // so we explicitly calculate the logits for them here
+    // See the following issue: https://github.com/nmslib/hnswlib/issues/352
+    
+   if (ith == 1 || nth == 1) {
+        float * dest = dst->data;
+        for (int i = 128000; i < 128256; ++i) {
+            dest[i] = -INFINITY;
+        }
+
+        int start_row = 128000;
+        int end_row = 128010;
+        float sums[11] = {0};
+
+        float * src1data = src1->data;
+        for (size_t i = 0; i < dimensions; ++i) {
+            float data0 = src1data[i];
+
+            for (int sp_row = start_row; sp_row <= end_row; ++sp_row) {
+                ggml_fp16_t *src0_ptr = (ggml_fp16_t *)((char *)src0->data + nb01 * sp_row);
+                float data1 = GGML_FP16_TO_FP32(src0_ptr[i]);
+                sums[sp_row - start_row] += data0 * data1;
+            }
+        }
+
+        for (int sp_row = start_row; sp_row <= end_row; ++sp_row) {
+            dest[sp_row] = sums[sp_row - start_row];
+        }
+    }
+}
+
+
 // ggml_compute_forward_mul_mat_id
 
 static void ggml_compute_forward_mul_mat_id(
@@ -12829,6 +12928,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 ggml_compute_forward_group_norm(params, tensor);
             } break;
+        case GGML_OP_MUL_MAT_TOPK:
+            {
+                ggml_compute_forward_mul_mat_topk(params, tensor);
+            } break;
         case GGML_OP_MUL_MAT:
             {
                 ggml_compute_forward_mul_mat(params, tensor);
@@ -13249,6 +13352,10 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
             {
                 n_tasks = n_threads;
             } break;
+        case GGML_OP_MUL_MAT_TOPK:
+            {
+                n_tasks = 1;
+            } break;
         case GGML_OP_GET_ROWS:
             {
                 // FIXME: get_rows can use additional threads, but the cost of launching additional threads
@@ -13662,7 +13769,6 @@ struct ggml_cplan ggml_graph_plan(
     if (n_threads <= 0) {
         n_threads = threadpool ? threadpool->n_threads_max : GGML_DEFAULT_N_THREADS;
     }
-
     size_t work_size = 0;
 
     struct ggml_cplan cplan;

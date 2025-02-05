@@ -222,6 +222,24 @@ static struct ggml_tensor * llm_build_lora_mm(
     return res;
 }
 
+// do mat_mul, while optionally apply lora
+static struct ggml_tensor * llm_build_lora_mm_topk(struct llama_context & lctx, struct ggml_context * ctx0,
+                                              struct ggml_tensor * w, struct ggml_tensor * cur) {
+    struct ggml_tensor * res = ggml_mul_mat_topk(ctx0, w, cur);
+    for (auto & it : lctx.lora) {
+        struct llama_adapter_lora_weight * lw = it.first->get_weight(w);
+        if (lw == nullptr) {
+            continue;
+        }
+        const float          adapter_scale = it.second;
+        const float          scale         = lw->get_scale(it.first->alpha, adapter_scale);
+        struct ggml_tensor * ab_cur        = ggml_mul_mat(ctx0, lw->b, ggml_mul_mat(ctx0, lw->a, cur));
+        ab_cur                             = ggml_scale(ctx0, ab_cur, scale);
+        res                                = ggml_add(ctx0, res, ab_cur);
+    }
+    return res;
+}
+
 // do mat_mul_id, while optionally apply lora
 static struct ggml_tensor * llm_build_lora_mm_id(
         struct llama_context & lctx,
@@ -1625,7 +1643,7 @@ struct llm_build_context {
         cb(cur, "result_norm", -1);
 
         // lm_head
-        cur = llm_build_lora_mm(lctx, ctx0, model.output, cur);
+        cur = llm_build_lora_mm_topk(lctx, ctx0, model.output, cur);
 
         // For Granite architecture
         if (hparams.f_logit_scale) {

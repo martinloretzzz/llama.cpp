@@ -1,3 +1,19 @@
+Build and Install hnswlib from: 
+https://github.com/martinloretzzz/hnswlib
+
+CPU build:
+`cmake -B build -DLLAMA_OPENBLAS=OFF -DGGML_METAL=OFF -DGGML_BLAS=OFF`
+`cmake --build build --config Release`
+
+LLama CLI:
+`./build/bin/llama-cli -m Llama-3.2-1B-Instruct.fp16.gguf`
+
+LLama Bench:
+`./build/bin/llama-bench -m Llama-3.2-1B-Instruct.fp16.gguf -p 0 -n 256 -t 1,6`
+
+Without vector index:
+`MM=True ./build/bin/llama-bench -m Llama-3.2-1B-Instruct.fp16.gguf -p 0 -n 256 -t 1,6`
+
 # llama.cpp
 
 ![llama](https://user-images.githubusercontent.com/1991296/230134379-7181e485-c521-4d23-a0d6-f7b3b61ba524.png)

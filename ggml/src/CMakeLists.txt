@@ -226,6 +226,10 @@ add_library(ggml
 
 target_link_libraries(ggml PUBLIC ggml-base)
 
+target_include_directories(ggml PUBLIC /usr/local/include/hnswlib)
+target_include_directories(ggml PUBLIC /usr/local/include)
+
+
 if (CMAKE_SYSTEM_NAME MATCHES "Linux")
     target_link_libraries(ggml PRIVATE dl)
 endif()
